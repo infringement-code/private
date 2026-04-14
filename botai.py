@@ -1,0 +1,526 @@
+import discord
+import datetime
+import json
+import aiohttp
+import mplfinance as mpf
+import io
+from discord.ext import commands, tasks
+import ccxt
+import pandas as pd
+import pandas_ta as ta
+import os
+from dotenv import load_dotenv
+import sqlite3
+
+load_dotenv()
+
+TOKEN = os.getenv("DISCORD_TOKEN")
+GROK_API_KEY = os.getenv("GROK_API_KEY")
+
+intents = discord.Intents.default()
+intents.message_content = True
+bot = commands.Bot(command_prefix="!", intents=intents)
+
+exchange = ccxt.binance({'enableRateLimit': True})
+
+# ==================== DYNAMIC SCANNER SETTINGS ====================
+MAX_COINS = 60          # How many top coins to scan (Wolf Signals style)
+MIN_24H_VOLUME_USDT = 800_000  # Only coins with at least this much volume
+# ================================================================
+
+# ==================== NEW FEATURES ====================
+STABLECOINS = {"USDC/USDT", "USD1/USDT", "USDT/USDT", "BUSD/USDT", "TUSD/USDT", "FDUSD/USDT", "USDD/USDT"}
+
+# Cooldown tracker (prevents spam)
+last_signal_time = {}  # key: "PAIR-TYPE" → timestamp
+SCALP_COOLDOWN = 1800    # 30 minutes
+SWING_COOLDOWN = 7200    # 2 hours
+SPOT_COOLDOWN = 21600    # 6 hours
+# ====================================================
+DYNAMIC_WATCHLIST = []  # Will be filled automatically
+
+@bot.event
+async def on_ready():
+    print(f"✅ {bot.user} is online!")
+    init_db()                                      # ← New
+    print("💾 Signal database ready")
+    print("🔄 Fetching initial dynamic watchlist...")
+    await refresh_watchlist()
+    print("📡 Sending immediate test signal...")
+    await send_test_signal("scalp-signals")
+    signal_loop.start()
+    refresh_watchlist.start()
+    check_open_signals.start()                     # ← New checker
+
+@tasks.loop(hours=1)
+async def refresh_watchlist():
+    global DYNAMIC_WATCHLIST
+    try:
+        print("🔄 Refreshing dynamic market scanner...")
+        tickers = exchange.fetch_tickers()
+        
+        usdt_pairs = []
+        for symbol, data in tickers.items():
+            if (symbol.endswith("/USDT") and 
+                data.get("quoteVolume", 0) >= MIN_24H_VOLUME_USDT and
+                symbol not in STABLECOINS):   # ← Stablecoin filter
+                usdt_pairs.append((symbol, data.get("quoteVolume", 0)))
+        
+        usdt_pairs.sort(key=lambda x: x[1], reverse=True)
+        DYNAMIC_WATCHLIST = [pair[0] for pair in usdt_pairs[:MAX_COINS]]
+        
+        print(f"✅ Dynamic scanner loaded {len(DYNAMIC_WATCHLIST)} coins (top volume, no stables)")
+        if len(DYNAMIC_WATCHLIST) > 0:
+            print(f"   Top 5: {', '.join(DYNAMIC_WATCHLIST[:5])}")
+    except Exception as e:
+        print(f"⚠️ Watchlist refresh failed: {e}")
+        if not DYNAMIC_WATCHLIST:
+            DYNAMIC_WATCHLIST = ["BTC/USDT", "ETH/USDT", "SOL/USDT"]
+
+@tasks.loop(minutes=5)
+async def signal_loop():
+    if not DYNAMIC_WATCHLIST:
+        print("⚠️ No coins in dynamic watchlist yet...")
+        return
+    
+    print(f"🔄 Running AI scan on {len(DYNAMIC_WATCHLIST)} live coins...")
+    
+    # Scalp signals (5m)
+    for symbol in DYNAMIC_WATCHLIST:
+        try:
+            df = await fetch_ohlcv(symbol, '5m', limit=200)
+            signal = await generate_ai_signal(df, symbol, "SCALP", "5m", "scalp-signals")
+            if signal:
+                await send_signal_to_channel(signal, "scalp-signals")
+        except Exception as e:
+            print(f"⚠️ Scalp error on {symbol}: {e}")
+
+    # Swing signals (1h)
+    for symbol in DYNAMIC_WATCHLIST:
+        try:
+            df = await fetch_ohlcv(symbol, '1h', limit=200)
+            signal = await generate_ai_signal(df, symbol, "SWING", "1h", "swing-signals")
+            if signal:
+                await send_signal_to_channel(signal, "swing-signals")
+        except Exception as e:
+            print(f"⚠️ Swing error on {symbol}: {e}")
+
+    # Spot signals (4h)
+    for symbol in DYNAMIC_WATCHLIST:
+        try:
+            df = await fetch_ohlcv(symbol, '4h', limit=200)
+            signal = await generate_ai_signal(df, symbol, "SPOT", "4h", "spot-signals")
+            if signal:
+                await send_signal_to_channel(signal, "spot-signals")
+        except Exception as e:
+            print(f"⚠️ Spot error on {symbol}: {e}")
+
+async def fetch_ohlcv(symbol, timeframe, limit=200):
+    ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+    df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+    return df
+
+async def analyze_with_grok(df, symbol, timeframe):
+    try:
+        recent = df.tail(15).copy()
+        recent['rsi'] = ta.rsi(recent['close'], length=14)
+        macd_df = ta.macd(recent['close'])
+        recent['macd'] = macd_df['MACD_12_26_9'] if macd_df is not None and not macd_df.empty else 0.0
+
+        data_str = recent[['open', 'high', 'low', 'close', 'volume', 'rsi', 'macd']].round(4).to_string()
+        
+        prompt = f"""You are a professional crypto trader. Analyze this {timeframe} chart for {symbol}.
+
+Recent data:
+{data_str}
+
+Current price: ${recent['close'].iloc[-1]:.4f}
+RSI: {recent['rsi'].iloc[-1]:.1f}
+
+Respond **ONLY** with valid JSON (no extra text):
+{{
+  "action": "LONG" or "SHORT" or "HOLD",
+  "confidence": 0-100,
+  "stop_loss_pct": -2.5,
+  "reason": "short 1-sentence explanation"
+}}
+
+Only return signal if confidence >= 70. Otherwise set action to "HOLD".
+"""
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "https://api.x.ai/v1/chat/completions",
+                headers={"Authorization": f"Bearer {GROK_API_KEY}", "Content-Type": "application/json"},
+                json={"model": "grok-3", "messages": [{"role": "user", "content": prompt}], "temperature": 0.3, "max_tokens": 300}
+            ) as resp:
+                result = await resp.json()
+                content = result['choices'][0]['message']['content']
+                return json.loads(content)
+    except Exception as e:
+        print(f"⚠️ Grok API error for {symbol}: {e}")
+        return {"action": "HOLD", "confidence": 0, "stop_loss_pct": 0, "reason": "API error"}
+
+async def generate_ai_signal(df, symbol, signal_type, tf_str, channel):
+    # Cooldown check
+    key = f"{symbol}-{signal_type}"
+    cooldown = SCALP_COOLDOWN if signal_type == "SCALP" else SWING_COOLDOWN if signal_type == "SWING" else SPOT_COOLDOWN
+    if key in last_signal_time and (datetime.datetime.utcnow() - last_signal_time[key]).total_seconds() < cooldown:
+        return None
+    
+    grok = await analyze_with_grok(df, symbol, tf_str)
+    if grok["action"] == "HOLD" or grok["confidence"] < 70:
+        return None
+    
+    # Record the time we sent a signal
+    last_signal_time[key] = datetime.datetime.utcnow()
+    
+    # ... rest of the function stays exactly the same ...
+    close = df['close'].iloc[-1]
+    entry = round(close, 4 if close < 10 else 2)
+    tp_pcts = [4, 8, 15, 25, 40, 60] if signal_type == "SCALP" else [5, 12, 20, 30, 50, 80]
+    direction = 1 if grok["action"] == "LONG" else -1
+    tps = [round(entry * (1 + direction * (p / 100)), 4 if entry < 10 else 2) for p in tp_pcts]
+    
+    return {
+        "type": signal_type,
+        "brand": "aMe Signals",
+        "pair": symbol,
+        "action": grok["action"],
+        "entry": entry,
+        "timeframe": tf_str,
+        "stop_loss": round(entry * (1 + grok["stop_loss_pct"]/100), 4 if entry < 10 else 2),
+        "tps": tps,
+        "tp_pcts": tp_pcts,
+        "confidence": grok["confidence"],
+        "strategy": f"Premium aMe {signal_type} Signal",
+        "utc_time": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "reason": grok["reason"]
+    }
+
+async def send_signal_to_channel(signal, channel_name):
+    color = 0x00ff88 if signal["action"] == "LONG" else 0xff3333
+
+    embed = discord.Embed(
+        title=f"🚀 💎 {signal['brand']} {signal['type']} SIGNAL 💎 🚀",
+        color=color,
+        timestamp=datetime.datetime.utcnow()
+    )
+    embed.set_author(name="aMe Signals APP", icon_url=bot.user.display_avatar.url)
+
+    chart_file = await generate_chart(signal["pair"], signal["timeframe"])
+
+    desc = f"""
+📊 **Symbol:** {signal['pair'].replace('/', '')}
+
+────────────────────────────
+
+💰 **Entry Price:** ${signal['entry']}
+⏰ **Timeframe:** {signal['timeframe']}
+🛡️ **Stop Loss:** ${signal['stop_loss']} 
+
+────────────────────────────
+
+🎯 **PROFIT TARGETS:**
+"""
+
+    tp_emojis = ["🥇", "🥈", "🥉", "🏆", "⭐", "💎"]
+    for i, (price, pct) in enumerate(zip(signal["tps"], signal["tp_pcts"])):
+        desc += f"{tp_emojis[i]} **TP{i+1}:** ${price} (+{pct}%)\n"
+
+    desc += f"""
+────────────────────────────
+
+💎 **Strategy:** {signal['strategy']}
+🔥 **Confidence:** {signal['confidence']}% 
+📝 **Reason:** {signal['reason']}
+
+────────────────────────────
+
+⏰ **UTC Time:** {signal['utc_time']}
+"""
+
+    embed.description = desc.strip()
+    embed.set_footer(text="Not financial advice • DYOR • High risk • Trade responsibly")
+
+    channel = discord.utils.get(bot.get_all_channels(), name=channel_name)
+    if channel:
+        if chart_file:
+            embed.set_image(url=f"attachment://{chart_file.filename}")
+            await channel.send(embed=embed, file=chart_file)
+            save_signal(signal)                    # ← Saved correctly now
+            print(f"✅ {signal['type']} {signal['action']} on {signal['pair']} | Chart embedded | Conf: {signal['confidence']}%")
+        else:
+            await channel.send(embed=embed)
+            save_signal(signal)
+            print(f"✅ {signal['type']} {signal['action']} on {signal['pair']} | Conf: {signal['confidence']}% (no chart)")
+    else:
+        print(f"⚠️ Channel #{channel_name} not found!")
+
+async def generate_chart(pair, timeframe):
+    try:
+        df = await fetch_ohlcv(pair, timeframe, limit=120)
+        df.set_index('timestamp', inplace=True)
+        df = df[['open', 'high', 'low', 'close', 'volume']].copy()
+        
+        # Add EMAs (popular TradingView indicators)
+        df['EMA9']  = ta.ema(df['close'], length=9)
+        df['EMA21'] = ta.ema(df['close'], length=21)
+        
+        # TradingView-inspired colors & style
+        mc = mpf.make_marketcolors(
+            up='#00ff88',           # bright green
+            down='#ff3333',         # bright red
+            wick={'up': '#00ff88', 'down': '#ff3333'},
+            volume={'up': '#00ff88', 'down': '#ff3333'},
+            inherit=True
+        )
+        
+        s = mpf.make_mpf_style(
+            marketcolors=mc,
+            gridstyle=':', 
+            gridcolor='#2a2a2a',
+            facecolor='#0e0e0e',      # dark background
+            figcolor='#0e0e0e',
+            rc={'font.size': 10, 'axes.titlesize': 12}
+        )
+        
+        # EMA plots
+        ap = [
+            mpf.make_addplot(df['EMA9'],  color='#f4a261', width=1.2),   # orange
+            mpf.make_addplot(df['EMA21'], color='#4fc3f7', width=1.2)    # blue
+        ]
+        
+        buf = io.BytesIO()
+        mpf.plot(
+            df,
+            type='candle',
+            style=s,
+            volume=True,
+            addplot=ap,
+            title=f"{pair} {timeframe} • aMe Signals",
+            figsize=(13, 8),           # slightly wider for better look
+            savefig=buf,
+            panel_ratios=(3, 1),       # bigger candle panel
+            volume_panel=1,
+            tight_layout=True,
+            scale_padding=0.15
+        )
+        buf.seek(0)
+        return discord.File(buf, filename=f"{pair}_{timeframe}_chart.png")
+    except Exception as e:
+        print(f"⚠️ Chart generation failed for {pair}: {e}")
+        return None
+
+# ==================== SIGNAL TRACKING DATABASE ====================
+def init_db():
+    conn = sqlite3.connect('signals.db')
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS signals (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        pair TEXT,
+        signal_type TEXT,
+        action TEXT,
+        entry REAL,
+        stop_loss REAL,
+        tps TEXT,                -- stored as JSON string
+        entry_time TEXT,
+        status TEXT DEFAULT 'OPEN',
+        exit_price REAL,
+        pnl_percent REAL,
+        pnl_dollars REAL,
+        hit_level TEXT
+    )''')
+    conn.commit()
+    conn.close()
+
+def save_signal(signal):
+    conn = sqlite3.connect('signals.db')
+    c = conn.cursor()
+    tps_json = json.dumps(signal['tps'])
+    c.execute('''INSERT INTO signals 
+                 (pair, signal_type, action, entry, stop_loss, tps, entry_time)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)''',
+              (signal['pair'], signal['type'], signal['action'], 
+               signal['entry'], signal['stop_loss'], tps_json, signal['utc_time']))
+    conn.commit()
+    conn.close()
+    print(f"💾 Saved signal for {signal['pair']} to database")
+
+@tasks.loop(minutes=5)
+async def check_open_signals():
+    conn = sqlite3.connect('signals.db')
+    c = conn.cursor()
+    c.execute("SELECT * FROM signals WHERE status = 'OPEN'")
+    open_signals = c.fetchall()
+    conn.close()
+
+    if not open_signals:
+        return
+
+    print(f"🔍 Checking {len(open_signals)} open calls...")
+    for row in open_signals:
+        sid, pair, sig_type, action, entry, sl, tps_json, entry_time, status, _, _, _, _ = row
+        try:
+            ticker = exchange.fetch_ticker(pair)
+            current = ticker['last']
+            tps = json.loads(tps_json)
+
+            hit = None
+            pnl_pct = 0
+            if action == "LONG":
+                if current <= sl:
+                    hit = "SL"
+                    pnl_pct = (sl - entry) / entry * 100
+                else:
+                    for i, tp in enumerate(tps):
+                        if current >= tp:
+                            hit = f"TP{i+1}"
+                            pnl_pct = (tp - entry) / entry * 100
+                            break
+            else:  # SHORT
+                if current >= sl:
+                    hit = "SL"
+                    pnl_pct = (entry - sl) / entry * 100
+                else:
+                    for i, tp in enumerate(tps):
+                        if current <= tp:
+                            hit = f"TP{i+1}"
+                            pnl_pct = (entry - tp) / entry * 100
+                            break
+
+            if hit:
+                pnl_dollars = round(pnl_pct / 100 * 1000, 2)   # ← Changed to $1,000
+                conn = sqlite3.connect('signals.db')
+                c = conn.cursor()
+                c.execute("""UPDATE signals 
+                             SET status=?, exit_price=?, pnl_percent=?, pnl_dollars=?, hit_level=?
+                             WHERE id=?""",
+                          (hit if hit == "SL" else "CLOSED", current, pnl_pct, pnl_dollars, hit, sid))
+                conn.commit()
+                conn.close()
+                print(f"✅ {pair} hit {hit} → ${pnl_dollars}")
+        except:
+            pass  # skip if API fails
+
+# Test command
+@bot.command()
+async def testsignal(ctx, signal_type: str = "scalp"):
+    await ctx.send(f"🧪 Generating test {signal_type.upper()} signal...")
+    await send_test_signal(f"{signal_type}-signals")
+
+async def send_test_signal(channel_name):
+    try:
+        ticker = exchange.fetch_ticker('BTC/USDT')
+        close = ticker['last']
+        signal = {
+            "type": "SCALP", "brand": "aMe Signals", "pair": "BTC/USDT", "action": "LONG",
+            "entry": round(close, 2), "timeframe": "5m",
+            "stop_loss": round(close * 0.975, 2),
+            "tps": [round(close * 1.04, 2), round(close * 1.08, 2), round(close * 1.15, 2), 
+                    round(close * 1.25, 2), round(close * 1.40, 2), round(close * 1.60, 2)],
+            "tp_pcts": [4, 8, 15, 25, 40, 60],
+            "confidence": 88,
+            "strategy": "Premium aMe Signal (Test)",
+            "utc_time": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "reason": "Strong bullish momentum detected"
+        }
+        await send_signal_to_channel(signal, channel_name)
+    except Exception as e:
+        print(f"Test signal error: {e}")
+
+@bot.command()
+async def calls(ctx):
+    """Show all currently open calls"""
+    conn = sqlite3.connect('signals.db')
+    c = conn.cursor()
+    c.execute("SELECT * FROM signals WHERE status = 'OPEN' ORDER BY entry_time DESC")
+    rows = c.fetchall()
+    conn.close()
+
+    if not rows:
+        await ctx.send("✅ No open calls right now!")
+        return
+
+    embed = discord.Embed(title="📬 OPEN CALLS", color=0x00ffff)
+    for row in rows[:10]:  # max 10
+        pair, sig_type, action, entry, sl = row[1], row[2], row[3], row[4], row[5]
+        embed.add_field(name=f"{pair} {action} ({sig_type})", 
+                        value=f"Entry: ${entry}\nSL: ${sl}", inline=False)
+    await ctx.send(embed=embed)
+
+@bot.command()
+async def performance(ctx):
+    """Full P&L report with $1,000 starting capital simulation"""
+    conn = sqlite3.connect('signals.db')
+    c = conn.cursor()
+    c.execute("SELECT * FROM signals")
+    rows = c.fetchall()
+    conn.close()
+
+    if not rows:
+        await ctx.send("No signals yet!")
+        return
+
+    total_pnl = 0
+    wins = 0
+    closed = 0
+    open_trades = []
+
+    for row in rows:
+        status = row[8]
+        pnl_d = row[11] or 0
+        total_pnl += pnl_d
+        if status != "OPEN":
+            closed += 1
+            if pnl_d > 0:
+                wins += 1
+        else:
+            open_trades.append(row)
+
+    win_rate = round((wins / closed * 100), 1) if closed else 0
+
+    embed = discord.Embed(title="📊 aMe Signals PERFORMANCE", color=0x00ff88)
+    embed.add_field(name="Total P&L", 
+                    value=f"${total_pnl:,.2f} (from $1k/trade)", inline=False)
+    embed.add_field(name="Closed Trades", value=f"{closed} | Win Rate: {win_rate}%", inline=True)
+    embed.add_field(name="Open Trades", value=len(open_trades), inline=True)
+
+    if open_trades:
+        embed.add_field(name="🔴 Currently Open", value="Check with `!calls`", inline=False)
+
+    embed.set_footer(text="Simulated with $1,000 notional per trade • Not financial advice")
+    await ctx.send(embed=embed)
+
+@bot.command()
+async def history(ctx):
+    """Shows all closed trades with full P&L details"""
+    conn = sqlite3.connect('signals.db')
+    c = conn.cursor()
+    c.execute("SELECT * FROM signals WHERE status != 'OPEN' ORDER BY entry_time DESC")
+    rows = c.fetchall()
+    conn.close()
+
+    if not rows:
+        await ctx.send("No closed trades yet!")
+        return
+
+    embed = discord.Embed(title="📜 aMe Signals HISTORY (Last 15 closed)", color=0x00ff88)
+    for row in rows[:15]:
+        pair = row[1]
+        sig_type = row[2]
+        action = row[3]
+        entry = row[4]
+        hit = row[12]
+        pnl = row[11]
+        emoji = "🟢" if pnl and pnl > 0 else "🔴"
+        embed.add_field(
+            name=f"{emoji} {pair} {action} ({sig_type})",
+            value=f"Entry: ${entry}\nHit: **{hit}**\nP&L: **${pnl:.2f}**",
+            inline=False
+        )
+    embed.set_footer(text=f"Total closed trades in DB: {len(rows)} • $1k per trade simulation")
+    await ctx.send(embed=embed)
+
+bot.run(TOKEN)
