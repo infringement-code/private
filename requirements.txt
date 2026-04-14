@@ -1,7 +1,7 @@
 discord.py==2.4.0
 ccxt==4.5.48
 pandas==2.2.3
-pandas-ta==0.3.14b0
+pandas-ta==0.4.71b0
 aiohttp==3.11.12
 mplfinance==0.12.10b0
 python-dotenv==1.0.1
