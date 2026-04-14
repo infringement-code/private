@@ -21,7 +21,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-exchange = ccxt.binance({'enableRateLimit': True})
+exchange = ccxt.bybit({'enableRateLimit': True})
 
 # ==================== DYNAMIC SCANNER SETTINGS ====================
 MAX_COINS = 60          # How many top coins to scan (Wolf Signals style)
