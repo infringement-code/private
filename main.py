@@ -198,7 +198,7 @@ async def generate_ai_signal(df, symbol, signal_type, tf_str, channel):
         "tp_pcts": tp_pcts,
         "confidence": grok["confidence"],
         "strategy": f"Premium aMe {signal_type} Signal",
-        "utc_time": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "utc_time": datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),   # ← Fixed
         "reason": grok["reason"]
     }
 
@@ -208,7 +208,7 @@ async def send_signal_to_channel(signal, channel_name):
     embed = discord.Embed(
         title=f"🚀 💎 {signal['brand']} {signal['type']} SIGNAL 💎 🚀",
         color=color,
-        timestamp=datetime.datetime.utcnow()
+        timestamp=datetime.datetime.now(datetime.UTC)
     )
     embed.set_author(name="aMe Signals APP", icon_url=bot.user.display_avatar.url)
 
