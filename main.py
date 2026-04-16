@@ -472,7 +472,7 @@ async def send_test_signal(channel_name):
             "tp_pcts": [4, 8, 15, 25, 40, 60],
             "confidence": 88,
             "strategy": "Premium aMe Signal (Test)",
-            "utc_time": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "utc_time": datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "reason": "Strong bullish momentum detected"
         }
         await send_signal_to_channel(signal, channel_name)
