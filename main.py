@@ -1,3 +1,4 @@
+import asyncio
 import discord
 import datetime
 import json
@@ -11,7 +12,6 @@ import pandas_ta as ta
 import os
 from dotenv import load_dotenv
 import sqlite3
-import asyncio
 
 load_dotenv()
 
