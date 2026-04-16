@@ -1,10 +1,10 @@
+import asyncio
 import discord
 import datetime
 import json
 import aiohttp
 import mplfinance as mpf
 import io
-import asyncio
 from discord.ext import commands, tasks
 import ccxt
 import pandas as pd
@@ -86,9 +86,9 @@ async def signal_loop():
 
     print(f"🔄 Running AI scan on {len(DYNAMIC_WATCHLIST)} live coins...")
 
-    # Scalp
+    # Scalp signals
     for symbol in DYNAMIC_WATCHLIST:
-        current_symbol = symbol
+        current_symbol = symbol   # Safe capture
         try:
             print(f"   [SCALP] Checking {current_symbol}...")
             df = await fetch_ohlcv(symbol, '5m', limit=200)
@@ -100,7 +100,7 @@ async def signal_loop():
         except Exception as e:
             print(f"⚠️ Scalp error on {current_symbol}: {e}")
 
-    # Swing (every 15 min)
+    # Swing signals (every 15 minutes)
     if datetime.datetime.now().minute % 15 == 0:
         for symbol in DYNAMIC_WATCHLIST:
             current_symbol = symbol
@@ -115,7 +115,7 @@ async def signal_loop():
             except Exception as e:
                 print(f"⚠️ Swing error on {current_symbol}: {e}")
 
-    # Spot (every 30 min)
+    # Spot signals (every 30 minutes)
     if datetime.datetime.now().minute % 30 == 0:
         for symbol in DYNAMIC_WATCHLIST:
             current_symbol = symbol
