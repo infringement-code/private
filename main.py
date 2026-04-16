@@ -1,10 +1,10 @@
-import asyncio
 import discord
 import datetime
 import json
 import aiohttp
 import mplfinance as mpf
 import io
+import asyncio
 from discord.ext import commands, tasks
 import ccxt
 import pandas as pd
@@ -27,21 +27,19 @@ exchange = ccxt.okx({
     'options': {'defaultType': 'spot'}
 })
 
-# ==================== DYNAMIC SCANNER SETTINGS ====================
+# ==================== SETTINGS ====================
 MAX_COINS = 60
 MIN_24H_VOLUME_USDT = 800_000
-# ================================================================
 
-# ==================== NEW FEATURES ====================
 STABLECOINS = {"USDC/USDT", "USD1/USDT", "USDT/USDT", "BUSD/USDT", "TUSD/USDT", "FDUSD/USDT", "USDD/USDT"}
 
 last_signal_time = {}
-SCALP_COOLDOWN = 1800   # 30 minutes
-SWING_COOLDOWN = 7200   # 2 hours
-SPOT_COOLDOWN = 21600   # 6 hours
-# ====================================================
+SCALP_COOLDOWN = 1800
+SWING_COOLDOWN = 7200
+SPOT_COOLDOWN = 21600
 
 DYNAMIC_WATCHLIST = []
+# ====================================================
 
 @bot.event
 async def on_ready():
@@ -73,7 +71,7 @@ async def refresh_watchlist():
         DYNAMIC_WATCHLIST = [pair[0] for pair in usdt_pairs[:MAX_COINS]]
         
         print(f"✅ Dynamic scanner loaded {len(DYNAMIC_WATCHLIST)} coins (top volume, no stables)")
-        if len(DYNAMIC_WATCHLIST) > 0:
+        if DYNAMIC_WATCHLIST:
             print(f"   Top 5: {', '.join(DYNAMIC_WATCHLIST[:5])}")
     except Exception as e:
         print(f"⚠️ Watchlist refresh failed: {e}")
@@ -88,44 +86,50 @@ async def signal_loop():
 
     print(f"🔄 Running AI scan on {len(DYNAMIC_WATCHLIST)} live coins...")
 
-    # Scalp signals (every 5 minutes)
+    # Scalp
     for symbol in DYNAMIC_WATCHLIST:
-        current_symbol = symbol  # ← Safe capture to prevent "symbol not defined"
+        current_symbol = symbol
         try:
+            print(f"   [SCALP] Checking {current_symbol}...")
             df = await fetch_ohlcv(symbol, '5m', limit=200)
             signal = await generate_ai_signal(df, symbol, "SCALP", "5m", "scalp-signals")
             if signal:
+                print(f"   → SIGNAL GENERATED for {current_symbol} SCALP")
                 await send_signal_to_channel(signal, "scalp-signals")
-            await asyncio.sleep(0.25)   # prevent rate-limit / heartbeat issues
+            await asyncio.sleep(0.25)
         except Exception as e:
             print(f"⚠️ Scalp error on {current_symbol}: {e}")
 
-    # Swing signals (every 15 minutes)
+    # Swing (every 15 min)
     if datetime.datetime.now().minute % 15 == 0:
         for symbol in DYNAMIC_WATCHLIST:
             current_symbol = symbol
             try:
+                print(f"   [SWING] Checking {current_symbol}...")
                 df = await fetch_ohlcv(symbol, '1h', limit=200)
                 signal = await generate_ai_signal(df, symbol, "SWING", "1h", "swing-signals")
                 if signal:
+                    print(f"   → SIGNAL GENERATED for {current_symbol} SWING")
                     await send_signal_to_channel(signal, "swing-signals")
                 await asyncio.sleep(0.3)
             except Exception as e:
                 print(f"⚠️ Swing error on {current_symbol}: {e}")
 
-    # Spot signals (every 30 minutes)
+    # Spot (every 30 min)
     if datetime.datetime.now().minute % 30 == 0:
         for symbol in DYNAMIC_WATCHLIST:
             current_symbol = symbol
             try:
+                print(f"   [SPOT] Checking {current_symbol}...")
                 df = await fetch_ohlcv(symbol, '4h', limit=200)
                 signal = await generate_ai_signal(df, symbol, "SPOT", "4h", "spot-signals")
                 if signal:
+                    print(f"   → SIGNAL GENERATED for {current_symbol} SPOT")
                     await send_signal_to_channel(signal, "spot-signals")
                 await asyncio.sleep(0.3)
             except Exception as e:
                 print(f"⚠️ Spot error on {current_symbol}: {e}")
-                
+
 async def fetch_ohlcv(symbol, timeframe, limit=200):
     ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
     df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
@@ -133,38 +137,29 @@ async def fetch_ohlcv(symbol, timeframe, limit=200):
     return df
 
 def passes_quantitative_filter(df, signal_type: str) -> bool:
-    """Balanced pre-filter - lets more good setups through while still saving API costs."""
     if len(df) < 50:
         return False
-
     close = df['close'].iloc[-1]
     rsi = ta.rsi(df['close'], length=14).iloc[-1]
     ema9 = ta.ema(df['close'], length=9).iloc[-1]
     volume = df['volume'].iloc[-1]
     volume_sma = ta.sma(df['volume'], length=20).iloc[-1]
 
-    # Volume spike (easier than before)
     if volume < volume_sma * 1.75:
         return False
 
     if signal_type == "SCALP":
-        # Scalp - more forgiving
-        if close > ema9 and 25 < rsi < 42:      # LONG
+        if close > ema9 and 25 < rsi < 42:
             return True
-        if close < ema9 and 58 < rsi < 75:      # SHORT
+        if close < ema9 and 58 < rsi < 75:
             return True
-
     elif signal_type in ["SWING", "SPOT"]:
-        # Swing/Spot - still reasonably strict
-        if close > ema9 and 28 < rsi < 45:      # LONG
+        if close > ema9 and 28 < rsi < 45:
             return True
-        if close < ema9 and 55 < rsi < 72:      # SHORT
+        if close < ema9 and 55 < rsi < 72:
             return True
-    # Optional debug - remove or comment out when happy
-    print(f"   Filtered {symbol} {signal_type} | RSI={rsi:.1f} Vol={volume/volume_sma:.1f}x")
     return False
 
-# ==================== OPTIMIZED GROK CALL (with cost logging) ====================
 async def analyze_with_grok(df, symbol, timeframe):
     try:
         recent = df.tail(20).copy()
@@ -186,7 +181,7 @@ Current price: ${recent['close'].iloc[-1]:.4f}
 RSI: {recent['rsi'].iloc[-1]:.1f}
 Volume vs avg: {recent['volume'].iloc[-1] / recent['volume_sma'].iloc[-1]:.2f}x
 
-Be strict. Only signal if you see a high-probability setup with clear momentum and volume confirmation.
+Be strict. Only signal if you see a high-probability setup.
 
 Respond **ONLY** with valid JSON:
 {{
@@ -203,16 +198,10 @@ Only return signal if confidence >= 75. Otherwise use "HOLD".
             async with session.post(
                 "https://api.x.ai/v1/chat/completions",
                 headers={"Authorization": f"Bearer {GROK_API_KEY}", "Content-Type": "application/json"},
-                json={
-                    "model": "grok-3",
-                    "messages": [{"role": "user", "content": prompt}],
-                    "temperature": 0.15,
-                    "max_tokens": 300
-                }
+                json={"model": "grok-3", "messages": [{"role": "user", "content": prompt}], "temperature": 0.15, "max_tokens": 300}
             ) as resp:
                 result = await resp.json()
                 
-                # Cost logging
                 try:
                     usage = result.get('usage', {})
                     input_t = usage.get('input_tokens', 0)
@@ -230,21 +219,25 @@ Only return signal if confidence >= 75. Otherwise use "HOLD".
         return {"action": "HOLD", "confidence": 0, "stop_loss_pct": 0, "reason": "API error"}
 
 async def generate_ai_signal(df, symbol, signal_type, tf_str, channel):
-    # Strong pre-filter first
+    print(f"   [Pre-filter] Checking {symbol} {signal_type}...")
     if not passes_quantitative_filter(df, signal_type):
+        print(f"   [Pre-filter] REJECTED {symbol} {signal_type}")
         return None
+    print(f"   [Pre-filter] PASSED {symbol} {signal_type} → Calling Grok")
 
-    # Cooldown check
     key = f"{symbol}-{signal_type}"
     cooldown = SCALP_COOLDOWN if signal_type == "SCALP" else SWING_COOLDOWN if signal_type == "SWING" else SPOT_COOLDOWN
     if key in last_signal_time and (datetime.datetime.utcnow() - last_signal_time[key]).total_seconds() < cooldown:
+        print(f"   [Cooldown] Skipping {symbol} {signal_type}")
         return None
 
     grok = await analyze_with_grok(df, symbol, tf_str)
     if grok["action"] == "HOLD" or grok["confidence"] < 75:
+        print(f"   [Grok] HOLD on {symbol} {signal_type}")
         return None
 
     last_signal_time[key] = datetime.datetime.utcnow()
+    print(f"   [Grok] SIGNAL ACCEPTED for {symbol} {signal_type} (Confidence: {grok['confidence']}%)")
 
     close = df['close'].iloc[-1]
     entry = round(close, 4 if close < 10 else 2)
@@ -268,64 +261,6 @@ async def generate_ai_signal(df, symbol, signal_type, tf_str, channel):
         "reason": grok["reason"]
     }
 
-async def send_signal_to_channel(signal, channel_name):
-    color = 0x00ff88 if signal["action"] == "LONG" else 0xff3333
-
-    embed = discord.Embed(
-        title=f"🚀 💎 {signal['brand']} {signal['type']} SIGNAL 💎 🚀",
-        color=color,
-        timestamp=datetime.datetime.now(datetime.UTC)
-    )
-    embed.set_author(name="aMe Signals APP", icon_url=bot.user.display_avatar.url)
-
-    chart_file = await generate_chart(signal["pair"], signal["timeframe"])
-
-    desc = f"""
-📊 **Symbol:** {signal['pair'].replace('/', '')}
-
-────────────────────────────
-
-💰 **Entry Price:** ${signal['entry']}
-⏰ **Timeframe:** {signal['timeframe']}
-🛡️ **Stop Loss:** ${signal['stop_loss']} 
-
-────────────────────────────
-
-🎯 **PROFIT TARGETS:**
-"""
-
-    tp_emojis = ["🥇", "🥈", "🥉", "🏆", "⭐", "💎"]
-    for i, (price, pct) in enumerate(zip(signal["tps"], signal["tp_pcts"])):
-        desc += f"{tp_emojis[i]} **TP{i+1}:** ${price} (+{pct}%)\n"
-
-    desc += f"""
-────────────────────────────
-
-💎 **Strategy:** {signal['strategy']}
-🔥 **Confidence:** {signal['confidence']}% 
-📝 **Reason:** {signal['reason']}
-
-────────────────────────────
-
-⏰ **UTC Time:** {signal['utc_time']}
-"""
-
-    embed.description = desc.strip()
-    embed.set_footer(text="Not financial advice • DYOR • High risk • Trade responsibly")
-
-    channel = discord.utils.get(bot.get_all_channels(), name=channel_name)
-    if channel:
-        if chart_file:
-            embed.set_image(url=f"attachment://{chart_file.filename}")
-            await channel.send(embed=embed, file=chart_file)
-            save_signal(signal)                    # ← Saved correctly now
-            print(f"✅ {signal['type']} {signal['action']} on {signal['pair']} | Chart embedded | Conf: {signal['confidence']}%")
-        else:
-            await channel.send(embed=embed)
-            save_signal(signal)
-            print(f"✅ {signal['type']} {signal['action']} on {signal['pair']} | Conf: {signal['confidence']}% (no chart)")
-    else:
-        print(f"⚠️ Channel #{channel_name} not found!")
 
 async def send_test_signal_to_channel(signal, channel_name):
     """Sends a test signal but DOES NOT save it to the database or count in performance"""
