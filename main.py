@@ -137,27 +137,43 @@ async def fetch_ohlcv(symbol, timeframe, limit=200):
     return df
 
 def passes_quantitative_filter(df, signal_type: str) -> bool:
+    """Pre-filter with full debug logging so we can see exactly why coins are rejected."""
     if len(df) < 50:
+        print(f"   [Pre-filter] {symbol} {signal_type} → REJECTED (not enough data)")
         return False
+
     close = df['close'].iloc[-1]
     rsi = ta.rsi(df['close'], length=14).iloc[-1]
     ema9 = ta.ema(df['close'], length=9).iloc[-1]
     volume = df['volume'].iloc[-1]
     volume_sma = ta.sma(df['volume'], length=20).iloc[-1]
+    volume_ratio = volume / volume_sma
 
-    if volume < volume_sma * 1.75:
+    print(f"   [Pre-filter] {symbol} {signal_type} | Price=${close:.4f} | RSI={rsi:.1f} | Vol={volume_ratio:.2f}x | vs EMA9={'above' if close > ema9 else 'below'}")
+
+    # Volume check
+    if volume_ratio < 1.75:
+        print(f"   [Pre-filter] {symbol} {signal_type} → REJECTED (volume too low: {volume_ratio:.2f}x)")
         return False
 
     if signal_type == "SCALP":
         if close > ema9 and 25 < rsi < 42:
+            print(f"   [Pre-filter] {symbol} {signal_type} → **PASSED** (SCALP LONG setup)")
             return True
         if close < ema9 and 58 < rsi < 75:
+            print(f"   [Pre-filter] {symbol} {signal_type} → **PASSED** (SCALP SHORT setup)")
             return True
+        print(f"   [Pre-filter] {symbol} {signal_type} → REJECTED (no strong scalp momentum)")
+
     elif signal_type in ["SWING", "SPOT"]:
         if close > ema9 and 28 < rsi < 45:
+            print(f"   [Pre-filter] {symbol} {signal_type} → **PASSED** (SWING/SPOT LONG setup)")
             return True
         if close < ema9 and 55 < rsi < 72:
+            print(f"   [Pre-filter] {symbol} {signal_type} → **PASSED** (SWING/SPOT SHORT setup)")
             return True
+        print(f"   [Pre-filter] {symbol} {signal_type} → REJECTED (no strong swing/spot structure)")
+
     return False
 
 async def analyze_with_grok(df, symbol, timeframe):
