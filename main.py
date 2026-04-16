@@ -307,6 +307,63 @@ async def send_signal_to_channel(signal, channel_name):
     else:
         print(f"⚠️ Channel #{channel_name} not found!")
 
+async def send_test_signal_to_channel(signal, channel_name):
+    """Sends a test signal but DOES NOT save it to the database or count in performance"""
+    color = 0x00ff88 if signal["action"] == "LONG" else 0xff3333
+
+    embed = discord.Embed(
+        title=f"🚀 💎 {signal['brand']} {signal['type']} SIGNAL 💎 🚀 (TEST)",
+        color=color,
+        timestamp=datetime.datetime.now(datetime.UTC)
+    )
+    embed.set_author(name="aMe Signals APP", icon_url=bot.user.display_avatar.url)
+
+    chart_file = await generate_chart(signal["pair"], signal["timeframe"])
+
+    desc = f"""
+📊 **Symbol:** {signal['pair'].replace('/', '')}
+
+────────────────────────────
+
+💰 **Entry Price:** ${signal['entry']}
+⏰ **Timeframe:** {signal['timeframe']}
+🛡️ **Stop Loss:** ${signal['stop_loss']} 
+
+────────────────────────────
+
+🎯 **PROFIT TARGETS:**
+"""
+
+    tp_emojis = ["🥇", "🥈", "🥉", "🏆", "⭐", "💎"]
+    for i, (price, pct) in enumerate(zip(signal["tps"], signal["tp_pcts"])):
+        desc += f"{tp_emojis[i]} **TP{i+1}:** ${price} (+{pct}%)\n"
+
+    desc += f"""
+────────────────────────────
+
+💎 **Strategy:** {signal['strategy']}
+🔥 **Confidence:** {signal['confidence']}% 
+📝 **Reason:** {signal['reason']}
+
+────────────────────────────
+
+⏰ **UTC Time:** {signal['utc_time']}
+"""
+
+    embed.description = desc.strip()
+    embed.set_footer(text="TEST SIGNAL • Not counted in !performance • Not financial advice")
+
+    channel = discord.utils.get(bot.get_all_channels(), name=channel_name)
+    if channel:
+        if chart_file:
+            embed.set_image(url=f"attachment://{chart_file.filename}")
+            await channel.send(embed=embed, file=chart_file)
+        else:
+            await channel.send(embed=embed)
+        print(f"✅ TEST signal sent to #{channel_name} (not saved to DB)")
+    else:
+        print(f"⚠️ Channel #{channel_name} not found!")
+        
 async def generate_chart(pair, timeframe):
     try:
         df = await fetch_ohlcv(pair, timeframe, limit=120)
@@ -464,18 +521,22 @@ async def send_test_signal(channel_name):
         ticker = exchange.fetch_ticker('BTC/USDT')
         close = ticker['last']
         signal = {
-            "type": "SCALP", "brand": "aMe Signals", "pair": "BTC/USDT", "action": "LONG",
-            "entry": round(close, 2), "timeframe": "5m",
+            "type": "SCALP", 
+            "brand": "aMe Signals", 
+            "pair": "BTC/USDT", 
+            "action": "LONG",
+            "entry": round(close, 2), 
+            "timeframe": "5m",
             "stop_loss": round(close * 0.975, 2),
             "tps": [round(close * 1.04, 2), round(close * 1.08, 2), round(close * 1.15, 2), 
                     round(close * 1.25, 2), round(close * 1.40, 2), round(close * 1.60, 2)],
             "tp_pcts": [4, 8, 15, 25, 40, 60],
             "confidence": 88,
-            "strategy": "Premium aMe Signal (Test)",
+            "strategy": "Premium aMe Signal (TEST - not counted in performance)",
             "utc_time": datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "reason": "Strong bullish momentum detected"
         }
-        await send_signal_to_channel(signal, channel_name)
+        await send_test_signal_to_channel(signal, channel_name)   # ← Uses the new helper
     except Exception as e:
         print(f"Test signal error: {e}")
 
