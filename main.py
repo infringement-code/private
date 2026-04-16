@@ -129,29 +129,35 @@ async def fetch_ohlcv(symbol, timeframe, limit=200):
     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
     return df
 
-# ==================== STRONG PRE-FILTER (Cost Saver) ====================
 def passes_quantitative_filter(df, signal_type: str) -> bool:
-    if len(df) < 60:
+    """Balanced pre-filter - lets more good setups through while still saving API costs."""
+    if len(df) < 50:
         return False
+
     close = df['close'].iloc[-1]
     rsi = ta.rsi(df['close'], length=14).iloc[-1]
     ema9 = ta.ema(df['close'], length=9).iloc[-1]
     volume = df['volume'].iloc[-1]
     volume_sma = ta.sma(df['volume'], length=20).iloc[-1]
 
-    if volume < volume_sma * 2.2:
+    # Volume spike (easier than before)
+    if volume < volume_sma * 1.75:
         return False
 
     if signal_type == "SCALP":
-        if close > ema9 and 28 < rsi < 38:      # LONG
+        # Scalp - more forgiving
+        if close > ema9 and 25 < rsi < 42:      # LONG
             return True
-        if close < ema9 and 62 < rsi < 72:      # SHORT
+        if close < ema9 and 58 < rsi < 75:      # SHORT
             return True
+
     elif signal_type in ["SWING", "SPOT"]:
-        if close > ema9 and 30 < rsi < 42:      # LONG
+        # Swing/Spot - still reasonably strict
+        if close > ema9 and 28 < rsi < 45:      # LONG
             return True
-        if close < ema9 and 58 < rsi < 70:      # SHORT
+        if close < ema9 and 55 < rsi < 72:      # SHORT
             return True
+
     return False
 
 # ==================== OPTIMIZED GROK CALL (with cost logging) ====================
