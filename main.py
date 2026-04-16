@@ -88,20 +88,22 @@ async def signal_loop():
 
     print(f"🔄 Running AI scan on {len(DYNAMIC_WATCHLIST)} live coins...")
 
-    # Scalp signals - run every 5 minutes (most frequent)
+    # Scalp signals (every 5 minutes)
     for symbol in DYNAMIC_WATCHLIST:
+        current_symbol = symbol  # ← Safe capture to prevent "symbol not defined"
         try:
             df = await fetch_ohlcv(symbol, '5m', limit=200)
             signal = await generate_ai_signal(df, symbol, "SCALP", "5m", "scalp-signals")
             if signal:
                 await send_signal_to_channel(signal, "scalp-signals")
-            await asyncio.sleep(0.25)   # small delay to avoid rate limits
+            await asyncio.sleep(0.25)   # prevent rate-limit / heartbeat issues
         except Exception as e:
-            print(f"⚠️ Scalp error on {symbol}: {e}")
+            print(f"⚠️ Scalp error on {current_symbol}: {e}")
 
-    # Swing signals - run every 15 minutes (less frequent)
+    # Swing signals (every 15 minutes)
     if datetime.datetime.now().minute % 15 == 0:
         for symbol in DYNAMIC_WATCHLIST:
+            current_symbol = symbol
             try:
                 df = await fetch_ohlcv(symbol, '1h', limit=200)
                 signal = await generate_ai_signal(df, symbol, "SWING", "1h", "swing-signals")
@@ -109,11 +111,12 @@ async def signal_loop():
                     await send_signal_to_channel(signal, "swing-signals")
                 await asyncio.sleep(0.3)
             except Exception as e:
-                print(f"⚠️ Swing error on {symbol}: {e}")
+                print(f"⚠️ Swing error on {current_symbol}: {e}")
 
-    # Spot signals - run every 30 minutes (least frequent)
+    # Spot signals (every 30 minutes)
     if datetime.datetime.now().minute % 30 == 0:
         for symbol in DYNAMIC_WATCHLIST:
+            current_symbol = symbol
             try:
                 df = await fetch_ohlcv(symbol, '4h', limit=200)
                 signal = await generate_ai_signal(df, symbol, "SPOT", "4h", "spot-signals")
@@ -121,8 +124,8 @@ async def signal_loop():
                     await send_signal_to_channel(signal, "spot-signals")
                 await asyncio.sleep(0.3)
             except Exception as e:
-                print(f"⚠️ Spot error on {symbol}: {e}")
-
+                print(f"⚠️ Spot error on {current_symbol}: {e}")
+                
 async def fetch_ohlcv(symbol, timeframe, limit=200):
     ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
     df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
