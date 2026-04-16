@@ -27,25 +27,25 @@ exchange = ccxt.okx({
 })
 
 # ==================== DYNAMIC SCANNER SETTINGS ====================
-MAX_COINS = 60          # How many top coins to scan (Wolf Signals style)
-MIN_24H_VOLUME_USDT = 800_000  # Only coins with at least this much volume
+MAX_COINS = 60
+MIN_24H_VOLUME_USDT = 800_000
 # ================================================================
 
 # ==================== NEW FEATURES ====================
 STABLECOINS = {"USDC/USDT", "USD1/USDT", "USDT/USDT", "BUSD/USDT", "TUSD/USDT", "FDUSD/USDT", "USDD/USDT"}
 
-# Cooldown tracker (prevents spam)
-last_signal_time = {}  # key: "PAIR-TYPE" → timestamp
-SCALP_COOLDOWN = 1800    # 30 minutes
-SWING_COOLDOWN = 7200    # 2 hours
-SPOT_COOLDOWN = 21600    # 6 hours
+last_signal_time = {}
+SCALP_COOLDOWN = 1800   # 30 minutes
+SWING_COOLDOWN = 7200   # 2 hours
+SPOT_COOLDOWN = 21600   # 6 hours
 # ====================================================
-DYNAMIC_WATCHLIST = []  # Will be filled automatically
+
+DYNAMIC_WATCHLIST = []
 
 @bot.event
 async def on_ready():
     print(f"✅ {bot.user} is online!")
-    init_db()                                      # ← New
+    init_db()
     print("💾 Signal database ready")
     print("🔄 Fetching initial dynamic watchlist...")
     await refresh_watchlist()
@@ -53,7 +53,7 @@ async def on_ready():
     await send_test_signal("scalp-signals")
     signal_loop.start()
     refresh_watchlist.start()
-    check_open_signals.start()                     # ← New checker
+    check_open_signals.start()
 
 @tasks.loop(hours=1)
 async def refresh_watchlist():
@@ -61,12 +61,11 @@ async def refresh_watchlist():
     try:
         print("🔄 Refreshing dynamic market scanner...")
         tickers = exchange.fetch_tickers()
-        
         usdt_pairs = []
         for symbol, data in tickers.items():
-            if (symbol.endswith("/USDT") and 
+            if (symbol.endswith("/USDT") and
                 data.get("quoteVolume", 0) >= MIN_24H_VOLUME_USDT and
-                symbol not in STABLECOINS):   # ← Stablecoin filter
+                symbol not in STABLECOINS):
                 usdt_pairs.append((symbol, data.get("quoteVolume", 0)))
         
         usdt_pairs.sort(key=lambda x: x[1], reverse=True)
@@ -85,10 +84,8 @@ async def signal_loop():
     if not DYNAMIC_WATCHLIST:
         print("⚠️ No coins in dynamic watchlist yet...")
         return
-    
     print(f"🔄 Running AI scan on {len(DYNAMIC_WATCHLIST)} live coins...")
     
-    # Scalp signals (5m)
     for symbol in DYNAMIC_WATCHLIST:
         try:
             df = await fetch_ohlcv(symbol, '5m', limit=200)
@@ -98,7 +95,6 @@ async def signal_loop():
         except Exception as e:
             print(f"⚠️ Scalp error on {symbol}: {e}")
 
-    # Swing signals (1h)
     for symbol in DYNAMIC_WATCHLIST:
         try:
             df = await fetch_ohlcv(symbol, '1h', limit=200)
@@ -108,7 +104,6 @@ async def signal_loop():
         except Exception as e:
             print(f"⚠️ Swing error on {symbol}: {e}")
 
-    # Spot signals (4h)
     for symbol in DYNAMIC_WATCHLIST:
         try:
             df = await fetch_ohlcv(symbol, '4h', limit=200)
@@ -124,68 +119,119 @@ async def fetch_ohlcv(symbol, timeframe, limit=200):
     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
     return df
 
+# ==================== STRONG PRE-FILTER (Cost Saver) ====================
+def passes_quantitative_filter(df, signal_type: str) -> bool:
+    if len(df) < 60:
+        return False
+    close = df['close'].iloc[-1]
+    rsi = ta.rsi(df['close'], length=14).iloc[-1]
+    ema9 = ta.ema(df['close'], length=9).iloc[-1]
+    volume = df['volume'].iloc[-1]
+    volume_sma = ta.sma(df['volume'], length=20).iloc[-1]
+
+    if volume < volume_sma * 2.2:
+        return False
+
+    if signal_type == "SCALP":
+        if close > ema9 and 28 < rsi < 38:      # LONG
+            return True
+        if close < ema9 and 62 < rsi < 72:      # SHORT
+            return True
+    elif signal_type in ["SWING", "SPOT"]:
+        if close > ema9 and 30 < rsi < 42:      # LONG
+            return True
+        if close < ema9 and 58 < rsi < 70:      # SHORT
+            return True
+    return False
+
+# ==================== OPTIMIZED GROK CALL (with cost logging) ====================
 async def analyze_with_grok(df, symbol, timeframe):
     try:
-        recent = df.tail(15).copy()
+        recent = df.tail(20).copy()
         recent['rsi'] = ta.rsi(recent['close'], length=14)
-        macd_df = ta.macd(recent['close'])
-        recent['macd'] = macd_df['MACD_12_26_9'] if macd_df is not None and not macd_df.empty else 0.0
+        recent['macd'] = ta.macd(recent['close'])['MACD_12_26_9']
+        recent['ema9'] = ta.ema(recent['close'], length=9)
+        recent['ema21'] = ta.ema(recent['close'], length=21)
+        recent['atr'] = ta.atr(recent['high'], recent['low'], recent['close'], length=14)
+        recent['volume_sma'] = ta.sma(recent['volume'], length=20)
 
-        data_str = recent[['open', 'high', 'low', 'close', 'volume', 'rsi', 'macd']].round(4).to_string()
-        
-        prompt = f"""You are a professional crypto trader. Analyze this {timeframe} chart for {symbol}.
+        data_str = recent[['close', 'rsi', 'macd', 'ema9', 'ema21', 'atr', 'volume', 'volume_sma']].round(4).tail(10).to_string()
 
-Recent data:
+        prompt = f"""You are a professional crypto trader specializing in volatile meme and alt coins.
+
+Current {timeframe} chart for {symbol}:
 {data_str}
 
 Current price: ${recent['close'].iloc[-1]:.4f}
 RSI: {recent['rsi'].iloc[-1]:.1f}
+Volume vs avg: {recent['volume'].iloc[-1] / recent['volume_sma'].iloc[-1]:.2f}x
 
-Respond **ONLY** with valid JSON (no extra text):
+Be strict. Only signal if you see a high-probability setup with clear momentum and volume confirmation.
+
+Respond **ONLY** with valid JSON:
 {{
   "action": "LONG" or "SHORT" or "HOLD",
   "confidence": 0-100,
-  "stop_loss_pct": -2.5,
-  "reason": "short 1-sentence explanation"
+  "stop_loss_pct": -2.5 to -6.0,
+  "reason": "one short professional sentence"
 }}
 
-Only return signal if confidence >= 70. Otherwise set action to "HOLD".
+Only return signal if confidence >= 75. Otherwise use "HOLD".
 """
 
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 "https://api.x.ai/v1/chat/completions",
                 headers={"Authorization": f"Bearer {GROK_API_KEY}", "Content-Type": "application/json"},
-                json={"model": "grok-3", "messages": [{"role": "user", "content": prompt}], "temperature": 0.3, "max_tokens": 300}
+                json={
+                    "model": "grok-3",
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.15,
+                    "max_tokens": 300
+                }
             ) as resp:
                 result = await resp.json()
+                
+                # Cost logging
+                try:
+                    usage = result.get('usage', {})
+                    input_t = usage.get('input_tokens', 0)
+                    output_t = usage.get('output_tokens', 0)
+                    cost = (input_t * 3.00 + output_t * 15.00) / 1_000_000
+                    print(f"🔥 Grok {symbol} {timeframe} | {input_t}+{output_t} tokens | Cost: ${cost:.5f}")
+                except:
+                    pass
+
                 content = result['choices'][0]['message']['content']
                 return json.loads(content)
+
     except Exception as e:
         print(f"⚠️ Grok API error for {symbol}: {e}")
         return {"action": "HOLD", "confidence": 0, "stop_loss_pct": 0, "reason": "API error"}
 
 async def generate_ai_signal(df, symbol, signal_type, tf_str, channel):
+    # Strong pre-filter first
+    if not passes_quantitative_filter(df, signal_type):
+        return None
+
     # Cooldown check
     key = f"{symbol}-{signal_type}"
     cooldown = SCALP_COOLDOWN if signal_type == "SCALP" else SWING_COOLDOWN if signal_type == "SWING" else SPOT_COOLDOWN
     if key in last_signal_time and (datetime.datetime.utcnow() - last_signal_time[key]).total_seconds() < cooldown:
         return None
-    
+
     grok = await analyze_with_grok(df, symbol, tf_str)
-    if grok["action"] == "HOLD" or grok["confidence"] < 70:
+    if grok["action"] == "HOLD" or grok["confidence"] < 75:
         return None
-    
-    # Record the time we sent a signal
+
     last_signal_time[key] = datetime.datetime.utcnow()
-    
-    # ... rest of the function stays exactly the same ...
+
     close = df['close'].iloc[-1]
     entry = round(close, 4 if close < 10 else 2)
     tp_pcts = [4, 8, 15, 25, 40, 60] if signal_type == "SCALP" else [5, 12, 20, 30, 50, 80]
     direction = 1 if grok["action"] == "LONG" else -1
     tps = [round(entry * (1 + direction * (p / 100)), 4 if entry < 10 else 2) for p in tp_pcts]
-    
+
     return {
         "type": signal_type,
         "brand": "aMe Signals",
@@ -198,7 +244,7 @@ async def generate_ai_signal(df, symbol, signal_type, tf_str, channel):
         "tp_pcts": tp_pcts,
         "confidence": grok["confidence"],
         "strategy": f"Premium aMe {signal_type} Signal",
-        "utc_time": datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),   # ← Fixed
+        "utc_time": datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "reason": grok["reason"]
     }
 
