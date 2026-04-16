@@ -157,7 +157,8 @@ def passes_quantitative_filter(df, signal_type: str) -> bool:
             return True
         if close < ema9 and 55 < rsi < 72:      # SHORT
             return True
-
+    # Optional debug - remove or comment out when happy
+    print(f"   Filtered {symbol} {signal_type} | RSI={rsi:.1f} Vol={volume/volume_sma:.1f}x")
     return False
 
 # ==================== OPTIMIZED GROK CALL (with cost logging) ====================
