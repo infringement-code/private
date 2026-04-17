@@ -145,6 +145,7 @@ def passes_quantitative_filter(df, symbol: str, signal_type: str) -> bool:
     print(f"   [Pre-filter] {symbol} {signal_type} → REJECTED (no strong setup)")
     return False
 
+
 async def analyze_with_grok(df, symbol, timeframe):
     try:
         recent = df.tail(20).copy()
@@ -183,10 +184,21 @@ Only return signal if confidence >= 75. Otherwise use "HOLD".
             async with session.post(
                 "https://api.x.ai/v1/chat/completions",
                 headers={"Authorization": f"Bearer {GROK_API_KEY}", "Content-Type": "application/json"},
-                json={"model": "grok-3", "messages": [{"role": "user", "content": prompt}], "temperature": 0.15, "max_tokens": 300}
+                json={
+                    "model": "grok-3",
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.15,
+                    "max_tokens": 300
+                }
             ) as resp:
                 result = await resp.json()
-                
+
+                # === ROBUST ERROR HANDLING + DEBUG ===
+                if not result or 'choices' not in result:
+                    print(f"⚠️ Grok API error for {symbol} {timeframe} - Bad response:")
+                    print(json.dumps(result, indent=2))
+                    return {"action": "HOLD", "confidence": 0, "stop_loss_pct": 0, "reason": "API error"}
+
                 try:
                     usage = result.get('usage', {})
                     input_t = usage.get('input_tokens', 0)
@@ -200,9 +212,9 @@ Only return signal if confidence >= 75. Otherwise use "HOLD".
                 return json.loads(content)
 
     except Exception as e:
-        print(f"⚠️ Grok API error for {symbol}: {e}")
+        print(f"⚠️ Grok API exception for {symbol} {timeframe}: {e}")
         return {"action": "HOLD", "confidence": 0, "stop_loss_pct": 0, "reason": "API error"}
-
+        
 # ==================== GENERATE AI SIGNAL (fixed) ====================
 async def generate_ai_signal(df, symbol, signal_type, tf_str, channel):
     print(f"   [Pre-filter] Checking {symbol} {signal_type}...")
