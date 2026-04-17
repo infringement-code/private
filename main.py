@@ -105,9 +105,8 @@ async def fetch_ohlcv(symbol, timeframe, limit=200):
     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
     return df
 
-
 def passes_quantitative_filter(df, symbol: str, signal_type: str) -> bool:
-    """Balanced pre-filter with debug logging (tuned for real market conditions)."""
+    """Loosened pre-filter so we can actually get signals while debugging."""
     if len(df) < 50:
         print(f"   [Pre-filter] {symbol} {signal_type} → REJECTED (not enough data)")
         return False
@@ -121,32 +120,30 @@ def passes_quantitative_filter(df, symbol: str, signal_type: str) -> bool:
 
     print(f"   [Pre-filter] {symbol} {signal_type} | Price=${close:.4f} | RSI={rsi:.1f} | Vol={volume_ratio:.2f}x | vs EMA9={'above' if close > ema9 else 'below'}")
 
-    # Loosened volume requirement (was 1.75x → now 1.4x)
-    if volume_ratio < 1.4:
+    # Very loose volume requirement for testing
+    if volume_ratio < 1.1:
         print(f"   [Pre-filter] {symbol} {signal_type} → REJECTED (volume too low)")
         return False
 
-    # RSI + EMA checks (slightly wider for more signals)
+    # Very wide RSI + EMA checks so signals can pass
     if signal_type == "SCALP":
-        if close > ema9 and 24 < rsi < 44:      # LONG
+        if close > ema9 and 20 < rsi < 50:      # LONG
             print(f"   [Pre-filter] {symbol} {signal_type} → **PASSED** (SCALP LONG)")
             return True
-        if close < ema9 and 56 < rsi < 76:      # SHORT
+        if close < ema9 and 50 < rsi < 80:      # SHORT
             print(f"   [Pre-filter] {symbol} {signal_type} → **PASSED** (SCALP SHORT)")
             return True
 
     elif signal_type in ["SWING", "SPOT"]:
-        if close > ema9 and 27 < rsi < 47:      # LONG
+        if close > ema9 and 25 < rsi < 55:      # LONG
             print(f"   [Pre-filter] {symbol} {signal_type} → **PASSED** (SWING/SPOT LONG)")
             return True
-        if close < ema9 and 53 < rsi < 73:      # SHORT
+        if close < ema9 and 45 < rsi < 75:      # SHORT
             print(f"   [Pre-filter] {symbol} {signal_type} → **PASSED** (SWING/SPOT SHORT)")
             return True
 
     print(f"   [Pre-filter] {symbol} {signal_type} → REJECTED (no strong setup)")
     return False
-    
-    
 
 async def analyze_with_grok(df, symbol, timeframe):
     try:
