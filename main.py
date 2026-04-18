@@ -28,8 +28,8 @@ exchange = ccxt.okx({
 })
 
 # ==================== SETTINGS ====================
-MAX_COINS = 60
-MIN_24H_VOLUME_USDT = 800_000
+MAX_COINS = 100
+MIN_24H_VOLUME_USDT = 100_000
 
 STABLECOINS = {"USDC/USDT", "USD1/USDT", "USDT/USDT", "BUSD/USDT", "TUSD/USDT", "FDUSD/USDT", "USDD/USDT"}
 
