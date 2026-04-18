@@ -222,11 +222,19 @@ Only return signal if confidence >= 75. Otherwise use "HOLD".
                 headers={"Authorization": f"Bearer {GROK_API_KEY}", "Content-Type": "application/json"},
                 json={"model": "grok-3", "messages": [{"role": "user", "content": prompt}], "temperature": 0.15, "max_tokens": 300}
             ) as resp:
-                result = await resp.json()
+                
+                # === EARLY DEBUG - prints BEFORE any parsing ===
+                print(f"   [Grok API] Status code for {symbol} {timeframe}: {resp.status}")
+                raw_text = await resp.text()
+                print(f"   [Grok API] Raw response for {symbol} {timeframe}:")
+                print(raw_text[:1000])  # limit to first 1000 chars to avoid spam
 
-                # === EARLY DEBUG - prints as soon as we get a response ===
-                print(f"   [Grok Response] Raw result for {symbol} {timeframe}:")
-                print(json.dumps(result, indent=2) if result else "None / Empty")
+                # Try to parse as JSON
+                if resp.status != 200:
+                    print(f"⚠️ Grok API returned non-200 status for {symbol} {timeframe}")
+                    return {"action": "HOLD", "confidence": 0, "stop_loss_pct": 0, "reason": "API error"}
+
+                result = await resp.json()
 
                 if not result or 'choices' not in result or not result.get('choices'):
                     print(f"⚠️ Grok API Bad Response for {symbol} {timeframe}")
@@ -247,6 +255,7 @@ Only return signal if confidence >= 75. Otherwise use "HOLD".
     except Exception as e:
         print(f"⚠️ Grok API exception for {symbol} {timeframe}: {e}")
         return {"action": "HOLD", "confidence": 0, "stop_loss_pct": 0, "reason": "API error"}
+
 
 async def generate_ai_signal(df, symbol, signal_type, tf_str, channel):
     print(f"   [Pre-filter] Checking {symbol} {signal_type}...")
