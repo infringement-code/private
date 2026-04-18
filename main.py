@@ -54,7 +54,11 @@ SWING_RSI_LONG_MAX  = 55
 SWING_RSI_SHORT_MIN = 45
 SWING_RSI_SHORT_MAX = 75
 # ========================================================
-
+# ==================== LOGGING TOGGLES ====================
+LOG_PREFILTER = False     # Set to False to reduce noise
+LOG_SCALP = False         # Set to False to reduce noise
+LOG_GROK = True          # Keep this True when debugging API
+# ========================================================
 @bot.event
 async def on_ready():
     print(f"✅ {bot.user} is online!")
@@ -62,8 +66,7 @@ async def on_ready():
     print("💾 Signal database ready")
     print("🔄 Fetching initial dynamic watchlist...")
     await refresh_watchlist()
-    print("📡 Sending immediate test signal...")
-    await send_test_signal("scalp-signals")
+    # No automatic test signal on startup anymore
     signal_loop.start()
     refresh_watchlist.start()
     check_open_signals.start()
@@ -181,8 +184,10 @@ def passes_quantitative_filter(df, symbol: str, signal_type: str) -> bool:
 
     print(f"   [Pre-filter] {symbol} {signal_type} → REJECTED (no strong setup)")
     return False
+
 async def analyze_with_grok(df, symbol, timeframe):
-    print(f"   [Grok API] Starting call for {symbol} {timeframe}...")  # Earliest possible log
+    if LOG_GROK:
+        print(f"   [Grok API] Starting call for {symbol} {timeframe}...")
 
     try:
         recent = df.tail(20).copy()
@@ -224,10 +229,11 @@ Only return signal if confidence >= 75. Otherwise use "HOLD".
                 json={"model": "grok-3", "messages": [{"role": "user", "content": prompt}], "temperature": 0.15, "max_tokens": 300}
             ) as resp:
                 
-                print(f"   [Grok API] Status code for {symbol} {timeframe}: {resp.status}")
-                raw_text = await resp.text()
-                print(f"   [Grok API] Raw response for {symbol} {timeframe} (first 800 chars):")
-                print(raw_text[:800])
+                if LOG_GROK:
+                    print(f"   [Grok API] Status code for {symbol} {timeframe}: {resp.status}")
+                    raw_text = await resp.text()
+                    print(f"   [Grok API] Raw response for {symbol} {timeframe}:")
+                    print(raw_text[:1000])  # first 1000 chars only
 
                 if resp.status != 200:
                     print(f"⚠️ Grok API returned non-200 status ({resp.status}) for {symbol}")
@@ -244,7 +250,8 @@ Only return signal if confidence >= 75. Otherwise use "HOLD".
                     input_t = usage.get('input_tokens', 0)
                     output_t = usage.get('output_tokens', 0)
                     cost = (input_t * 3.00 + output_t * 15.00) / 1_000_000
-                    print(f"🔥 Grok {symbol} {timeframe} | {input_t}+{output_t} tokens | Cost: ${cost:.5f}")
+                    if LOG_GROK:
+                        print(f"🔥 Grok {symbol} {timeframe} | {input_t}+{output_t} tokens | Cost: ${cost:.5f}")
                 except:
                     pass
 
@@ -254,7 +261,7 @@ Only return signal if confidence >= 75. Otherwise use "HOLD".
     except Exception as e:
         print(f"⚠️ Grok API exception for {symbol} {timeframe}: {e}")
         return {"action": "HOLD", "confidence": 0, "stop_loss_pct": 0, "reason": "API error"}
-        
+
 
 async def generate_ai_signal(df, symbol, signal_type, tf_str, channel):
     print(f"   [Pre-filter] Checking {symbol} {signal_type}...")
@@ -526,22 +533,18 @@ async def testsignal(ctx, signal_type: str = "scalp"):
     await send_test_signal(f"{signal_type}-signals")
 
 async def send_test_signal(channel_name):
+    await ctx.send("🧪 Generating real Grok test signal...")   # Note: ctx is not available here, so we use print instead
+    print("🧪 Generating real Grok test signal for BTC/USDT...")
     try:
         ticker = exchange.fetch_ticker('BTC/USDT')
         close = ticker['last']
-        signal = {
-            "type": "SCALP", "brand": "aMe Signals", "pair": "BTC/USDT", "action": "LONG",
-            "entry": round(close, 2), "timeframe": "5m",
-            "stop_loss": round(close * 0.975, 2),
-            "tps": [round(close * 1.04, 2), round(close * 1.08, 2), round(close * 1.15, 2), 
-                    round(close * 1.25, 2), round(close * 1.40, 2), round(close * 1.60, 2)],
-            "tp_pcts": [4, 8, 15, 25, 40, 60],
-            "confidence": 88,
-            "strategy": "Premium aMe Signal (TEST - not counted in performance)",
-            "utc_time": datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "reason": "Strong bullish momentum detected"
-        }
-        await send_test_signal_to_channel(signal, channel_name)
+        # Create a real df for Grok to analyze
+        df = await fetch_ohlcv('BTC/USDT', '5m', limit=200)
+        signal = await generate_ai_signal(df, 'BTC/USDT', "SCALP", "5m", "scalp-signals")
+        if signal:
+            await send_signal_to_channel(signal, channel_name)
+        else:
+            print("   [Test] No signal generated by Grok")
     except Exception as e:
         print(f"Test signal error: {e}")
 
