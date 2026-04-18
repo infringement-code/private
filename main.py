@@ -193,9 +193,13 @@ Only return signal if confidence >= 75. Otherwise use "HOLD".
             ) as resp:
                 result = await resp.json()
 
-                # === ROBUST ERROR HANDLING + DEBUG ===
-                if not result or 'choices' not in result:
-                    print(f"⚠️ Grok API error for {symbol} {timeframe} - Bad response:")
+                # === FULL ERROR HANDLING + DEBUG ===
+                if not result:
+                    print(f"⚠️ Grok API returned empty response for {symbol} {timeframe}")
+                    return {"action": "HOLD", "confidence": 0, "stop_loss_pct": 0, "reason": "API error"}
+
+                if 'choices' not in result or not result['choices']:
+                    print(f"⚠️ Grok API error for {symbol} {timeframe} - Bad response received:")
                     print(json.dumps(result, indent=2))
                     return {"action": "HOLD", "confidence": 0, "stop_loss_pct": 0, "reason": "API error"}
 
