@@ -59,6 +59,7 @@ LOG_PREFILTER = False     # Set to False to reduce noise
 LOG_SCALP = False         # Set to False to reduce noise
 LOG_GROK = True          # Keep this True when debugging API
 # ========================================================
+FORCE_GROK = False   # ← Change to True to bypass pre-filter and force Grok every time
 @bot.event
 async def on_ready():
     print(f"✅ {bot.user} is online!")
@@ -265,9 +266,13 @@ Only return signal if confidence >= 75. Otherwise use "HOLD".
 
 async def generate_ai_signal(df, symbol, signal_type, tf_str, channel):
     print(f"   [Pre-filter] Checking {symbol} {signal_type}...")
-    if not passes_quantitative_filter(df, symbol, signal_type):
+
+    if FORCE_GROK:
+        print(f"   [Pre-filter] FORCE_GROK = True → Bypassing filter for {symbol}")
+    elif not passes_quantitative_filter(df, symbol, signal_type):
         return None
 
+    # Cooldown check
     key = f"{symbol}-{signal_type}"
     cooldown = SCALP_COOLDOWN if signal_type == "SCALP" else SWING_COOLDOWN if signal_type == "SWING" else SPOT_COOLDOWN
     if key in last_signal_time and (datetime.datetime.utcnow() - last_signal_time[key]).total_seconds() < cooldown:
