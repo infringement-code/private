@@ -59,7 +59,7 @@ LOG_PREFILTER = False     # Set to False to reduce noise
 LOG_SCALP = False         # Set to False to reduce noise
 LOG_GROK = True          # Keep this True when debugging API
 # ========================================================
-FORCE_GROK = False   # ← Change to True to bypass pre-filter and force Grok every time
+FORCE_GROK = True   # ← Change to True to bypass pre-filter and force Grok every time
 @bot.event
 async def on_ready():
     print(f"✅ {bot.user} is online!")
