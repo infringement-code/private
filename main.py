@@ -145,7 +145,6 @@ def passes_quantitative_filter(df, symbol: str, signal_type: str) -> bool:
     print(f"   [Pre-filter] {symbol} {signal_type} → REJECTED (no strong setup)")
     return False
 
-
 async def analyze_with_grok(df, symbol, timeframe):
     try:
         recent = df.tail(20).copy()
@@ -193,14 +192,11 @@ Only return signal if confidence >= 75. Otherwise use "HOLD".
             ) as resp:
                 result = await resp.json()
 
-                # === FULL ERROR HANDLING + DEBUG ===
-                if not result:
-                    print(f"⚠️ Grok API returned empty response for {symbol} {timeframe}")
-                    return {"action": "HOLD", "confidence": 0, "stop_loss_pct": 0, "reason": "API error"}
+                # === FULL DEBUG + ERROR HANDLING ===
+                print(f"   [Grok Response] Raw result for {symbol} {timeframe}: {json.dumps(result, indent=2) if result else 'None'}")
 
-                if 'choices' not in result or not result['choices']:
-                    print(f"⚠️ Grok API error for {symbol} {timeframe} - Bad response received:")
-                    print(json.dumps(result, indent=2))
+                if not result or 'choices' not in result or not result.get('choices'):
+                    print(f"⚠️ Grok API Bad Response for {symbol} {timeframe}")
                     return {"action": "HOLD", "confidence": 0, "stop_loss_pct": 0, "reason": "API error"}
 
                 try:
