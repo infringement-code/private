@@ -41,6 +41,29 @@ SPOT_COOLDOWN = 21600
 DYNAMIC_WATCHLIST = []
 # ====================================================
 
+# ==================== TUNABLE PRE-FILTER SETTINGS ====================
+# Change these values to control how strict the bot is
+
+MIN_VOLUME_RATIO = 0.6          # Lower = more signals (0.5 = very loose, 1.5 = very strict)
+
+# SCALP settings
+SCALP_RSI_LONG_MIN  = 22
+SCALP_RSI_LONG_MAX  = 48
+SCALP_RSI_SHORT_MIN = 52
+SCALP_RSI_SHORT_MAX = 78
+
+# SWING / SPOT settings
+SWING_RSI_LONG_MIN  = 25
+SWING_RSI_LONG_MAX  = 55
+SWING_RSI_SHORT_MIN = 45
+SWING_RSI_SHORT_MAX = 75
+
+# Recommended presets:
+#   Loose   (more signals, higher cost)   → MIN_VOLUME_RATIO = 0.6
+#   Normal  (balanced, recommended)       → MIN_VOLUME_RATIO = 0.8
+#   Strong  (fewer but higher quality)    → MIN_VOLUME_RATIO = 1.2
+# ========================================================
+
 @bot.event
 async def on_ready():
     print(f"✅ {bot.user} is online!")
@@ -106,7 +129,7 @@ async def fetch_ohlcv(symbol, timeframe, limit=200):
     return df
 
 def passes_quantitative_filter(df, symbol: str, signal_type: str) -> bool:
-    """Loosened pre-filter so we can actually get signals while debugging."""
+    """Fully tunable pre-filter with clear debug output."""
     if len(df) < 50:
         print(f"   [Pre-filter] {symbol} {signal_type} → REJECTED (not enough data)")
         return False
@@ -120,25 +143,25 @@ def passes_quantitative_filter(df, symbol: str, signal_type: str) -> bool:
 
     print(f"   [Pre-filter] {symbol} {signal_type} | Price=${close:.4f} | RSI={rsi:.1f} | Vol={volume_ratio:.2f}x | vs EMA9={'above' if close > ema9 else 'below'}")
 
-    # Very loose volume requirement for testing
-    if volume_ratio < 1.1:
+    # Volume check
+    if volume_ratio < MIN_VOLUME_RATIO:
         print(f"   [Pre-filter] {symbol} {signal_type} → REJECTED (volume too low)")
         return False
 
-    # Very wide RSI + EMA checks so signals can pass
+    # RSI + EMA checks
     if signal_type == "SCALP":
-        if close > ema9 and 20 < rsi < 50:      # LONG
+        if close > ema9 and SCALP_RSI_LONG_MIN < rsi < SCALP_RSI_LONG_MAX:
             print(f"   [Pre-filter] {symbol} {signal_type} → **PASSED** (SCALP LONG)")
             return True
-        if close < ema9 and 50 < rsi < 80:      # SHORT
+        if close < ema9 and SCALP_RSI_SHORT_MIN < rsi < SCALP_RSI_SHORT_MAX:
             print(f"   [Pre-filter] {symbol} {signal_type} → **PASSED** (SCALP SHORT)")
             return True
 
     elif signal_type in ["SWING", "SPOT"]:
-        if close > ema9 and 25 < rsi < 55:      # LONG
+        if close > ema9 and SWING_RSI_LONG_MIN < rsi < SWING_RSI_LONG_MAX:
             print(f"   [Pre-filter] {symbol} {signal_type} → **PASSED** (SWING/SPOT LONG)")
             return True
-        if close < ema9 and 45 < rsi < 75:      # SHORT
+        if close < ema9 and SWING_RSI_SHORT_MIN < rsi < SWING_RSI_SHORT_MAX:
             print(f"   [Pre-filter] {symbol} {signal_type} → **PASSED** (SWING/SPOT SHORT)")
             return True
 
